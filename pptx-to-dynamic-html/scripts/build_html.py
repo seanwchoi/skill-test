@@ -350,18 +350,22 @@ class Builder:
                 pst += "margin-top:%s;" % self.cq(para["spaceBefore"])
             if para.get("marL"):
                 pst += "padding-left:%s;" % self.cq(para["marL"])
+            hang = para.get("indent") or 0
+            if hang:  # PowerPoint hanging indent: first line starts at marL+indent
+                pst += "text-indent:%s;" % self.cq(hang)
             inner = []
             if para.get("bullet") and para["runs"]:
                 num += 1
                 ch = "%d." % num if para["bullet"] == "#" else para["bullet"]
                 first = next((r for r in para["runs"] if not r.get("br")), None)
-                inner.append('<span class="bu" style="color:%s">%s</span>' % (
-                    css_color(first["color"]) if first else "inherit", esc(ch)))
+                bw = "width:%s;min-width:0;margin-right:0;" % self.cq(-hang) if hang < 0 else ""
+                inner.append('<span class="bu" style="color:%s;%stext-indent:0">%s</span>' % (
+                    css_color(first["color"]) if first else "inherit", bw, esc(ch)))
             for r in para["runs"]:
                 if r.get("br"):
                     inner.append("<br>")
                     continue
-                fam = ", ".join('"%s"' % x for x in (r.get("font"), r.get("font_ea")) if x)
+                fam = ", ".join("'%s'" % x for x in (r.get("font"), r.get("font_ea")) if x)
                 rs = "font-size:%s;color:%s;font-family:%s, var(--fallback);" % (
                     self.cq(r["size"]), css_color(r["color"]), fam or "var(--fallback)")
                 if r["bold"]:
@@ -432,6 +436,18 @@ class Builder:
         crop = e.get("crop") or {}
         l, t, r, b = (crop.get(k, 0) for k in ("l", "t", "r", "b"))
         vw, vh = max(1 - l - r, 0.01), max(1 - t - b, 0.01)
+        if e.get("prst") not in (None, "rect", "ellipse", "roundRect", "flowChartConnector"):
+            # picture cut into a shape (a letter, chevron, ...): clip it with that outline
+            w, h = max(e["w"], 0.01), max(e["h"], 0.01)
+            cid = self.next_id("pc")
+            clip = "".join('<path d="%s" fill-rule="evenodd"/>' % d for d, _, _ in shape_svg_body(e))
+            flip = ""
+            if e.get("flipH") or e.get("flipV"):
+                flip = ' style="transform:scale(%d,%d)"' % (-1 if e.get("flipH") else 1, -1 if e.get("flipV") else 1)
+            return ('<svg class="geo" viewBox="0 0 %s %s" preserveAspectRatio="none"%s><defs><clipPath id="%s">%s</clipPath></defs>'
+                    '<image href="%s" x="%s" y="%s" width="%s" height="%s" preserveAspectRatio="none" clip-path="url(#%s)"/></svg>') % (
+                f(w), f(h), flip, cid, clip, self.data_uri(e["src"]),
+                f(-l / vw * w), f(-t / vh * h), f(w / vw), f(h / vh), cid)
         img = '<img alt="" src="%s" style="width:%s%%;height:%s%%;left:%s%%;top:%s%%">' % (
             self.data_uri(e["src"]), f(100 / vw), f(100 / vh), f(-l / vw * 100), f(-t / vh * 100))
         radius = ""

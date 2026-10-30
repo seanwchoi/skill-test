@@ -219,6 +219,8 @@ def parse_fill(parent, theme, ph_color=None):
         t = etree.QName(c).localname
         if t == "noFill":
             return {"type": "none"}
+        if t == "grpFill":
+            return {"type": "group"}
         if t == "solidFill":
             return {"type": "solid", "color": resolve_color(c, theme, ph_color)}
         if t == "gradFill":
@@ -423,13 +425,20 @@ class Extractor:
         for shp in shapes:
             el = shp._element
             tag = etree.QName(el).localname
+            cnv = el.find(".//p:cNvPr", NS)
+            if cnv is not None and cnv.get("hidden") in ("1", "true"):
+                continue  # hidden in PowerPoint (think-cell markers, notes, old versions)
             if tag == "grpSp":
+                gf = parse_fill(el.find("p:grpSpPr", NS), theme)
+                outer = getattr(self, "_gfill", None)
+                self._gfill = outer if (gf is None or gf["type"] == "group") else gf
                 off = el.find("p:grpSpPr/a:xfrm/a:off", NS)
                 ext = el.find("p:grpSpPr/a:xfrm/a:ext", NS)
                 choff = el.find("p:grpSpPr/a:xfrm/a:chOff", NS)
                 chext = el.find("p:grpSpPr/a:xfrm/a:chExt", NS)
                 if None in (off, ext, choff, chext):
                     self.walk(shp.shapes, xf, theme, tdefs, layout, origin, out)
+                    self._gfill = outer
                     continue
                 ox, oy = int(off.get("x")), int(off.get("y"))
                 ex, ey = int(ext.get("cx")), int(ext.get("cy"))
@@ -441,6 +450,7 @@ class Extractor:
                     return _p(ox + (x - cx) * sx, oy + (y - cy) * sy, w * sx, h * sy)
 
                 self.walk(shp.shapes, child_xf, theme, tdefs, layout, origin, out)
+                self._gfill = outer
                 continue
             try:
                 item = self.element(shp, xf, theme, tdefs, layout, origin)
@@ -462,6 +472,38 @@ class Extractor:
         x, y, w, h = xf(*g)
         return {"id": str(shp.shape_id), "name": shp.name, "kind": "raster", "reason": reason,
                 "x": x, "y": y, "w": w, "h": h, "rot": 0, "origin": origin}
+
+    def inherited_spPr(self, shp, layout):
+        """spPr of the matching layout (then master) placeholder, for geometry/fill the slide leaves out."""
+        if not getattr(shp, "is_placeholder", False):
+            return []
+        try:
+            idx = shp.placeholder_format.idx
+            ph_type = shp._element.find(".//p:nvPr/p:ph", NS).get("type")
+        except Exception:
+            return []
+        out = []
+        for src in (layout, layout.slide_master):
+            for ph in src.placeholders:
+                el = ph._element
+                t = el.find(".//p:nvPr/p:ph", NS).get("type")
+                if ph.placeholder_format.idx == idx or (ph_type and t == ph_type):
+                    sp = el.find("p:spPr", NS)
+                    if sp is not None:
+                        out.append(sp)
+                    break
+        return out
+
+    def geometry_el(self, spPr, inherited):
+        for sp in [spPr] + inherited:
+            if sp is None:
+                continue
+            g = sp.find("a:custGeom", NS)
+            if g is None:
+                g = sp.find("a:prstGeom", NS)
+            if g is not None:
+                return g
+        return None
 
     def element(self, shp, xf, theme, tdefs, layout, origin):
         el = shp._element
@@ -511,6 +553,9 @@ class Extractor:
         if tag == "pic":
             blip = el.find(".//a:blip", NS)
             rid = blip.get(R + "embed") if blip is not None else None
+            svg = blip.find(".//{http://schemas.microsoft.com/office/drawing/2016/SVG/main}svgBlip", NS) if blip is not None else None
+            if svg is not None and svg.get(R + "embed"):
+                rid = svg.get(R + "embed")  # crisp vector version Office stores next to the PNG
             if not rid:
                 return self.raster_item(shp, xf, origin, "linked picture")
             part = shp.part.related_part(rid)
@@ -523,14 +568,30 @@ class Extractor:
             if sr is not None:
                 for k in ("l", "t", "r", "b"):
                     crop[k] = int(sr.get(k, 0)) / 100000.0
-            prst = spPr.find("a:prstGeom", NS) if spPr is not None else None
-            return dict(base, kind="picture", src=src, crop=crop,
+            geo = self.geometry_el(spPr, self.inherited_spPr(shp, layout))
+            is_cust = geo is not None and etree.QName(geo).localname == "custGeom"
+            prst = geo if (geo is not None and not is_cust) else None
+            item = dict(base, kind="picture", src=src, crop=crop,
                         prst=prst.get("prst") if prst is not None else "rect",
                         line=parse_line(spPr, theme))
+            cust = geo if is_cust else None
+            if cust is not None:  # photo cut into a letter / custom outline
+                paths = self.custom_paths(cust)
+                if paths is None:
+                    return self.raster_item(shp, xf, origin, "picture with arc-shaped outline")
+                item["prst"] = "custom"
+                item["paths"] = paths
+            elif item["prst"] not in ("rect", "ellipse", "roundRect", "flowChartConnector") and item["prst"] in SUPPORTED_PRST:
+                item["adj"] = {}
+            elif item["prst"] not in ("rect", "ellipse", "roundRect", "flowChartConnector"):
+                return self.raster_item(shp, xf, origin, "picture with %s outline" % item["prst"])
+            return item
 
         # sp / cxnSp
-        prst_el = spPr.find("a:prstGeom", NS) if spPr is not None else None
-        cust = spPr.find("a:custGeom", NS) if spPr is not None else None
+        inh = self.inherited_spPr(shp, layout)
+        geo = self.geometry_el(spPr, inh)
+        prst_el = geo if geo is not None and etree.QName(geo).localname == "prstGeom" else None
+        cust = geo if geo is not None and etree.QName(geo).localname == "custGeom" else None
         prst = prst_el.get("prst") if prst_el is not None else None
         adj = {}
         if prst_el is not None:
@@ -540,6 +601,12 @@ class Extractor:
                     adj[gd.get("name")] = int(m.group(1))
 
         fill = parse_fill(spPr, theme)
+        for sp in inh:
+            if fill is not None:
+                break
+            fill = parse_fill(sp, theme)
+        if fill and fill["type"] == "group":
+            fill = getattr(self, "_gfill", None) or {"type": "none"}
         if fill and fill["type"] == "image" and fill.get("rid"):
             part = shp.part.related_part(fill["rid"])
             fill = {"type": "image", "src": self.save_blob(part.blob, part.partname.ext)}
@@ -688,6 +755,7 @@ class Extractor:
                     bullet = "#"
                     break
             indent = first_attr(lvl_chain, "marL")
+            hang = first_attr(lvl_chain, "indent")
             runs = []
             for r in p:
                 t = etree.QName(r).localname
@@ -706,27 +774,34 @@ class Extractor:
                         if sf is not None:
                             color = resolve_color(sf, theme)
                             break
-                face = None
+                # Latin text uses the latin face, Hangul/CJK the ea face; the
+                # browser does the same per glyph when both are in font-family
+                latin = ea = None
                 for e in chain:
                     if e is None:
                         continue
-                    for tagn in ("a:ea", "a:latin"):
-                        f = e.find(tagn, NS)
+                    if latin is None:
+                        f = e.find("a:latin", NS)
                         if f is not None and f.get("typeface"):
-                            face = theme.font(f.get("typeface"))
-                            break
-                    if face:
-                        break
+                            latin = theme.font(f.get("typeface"))
+                    if ea is None:
+                        f = e.find("a:ea", NS)
+                        if f is not None and f.get("typeface"):
+                            ea = theme.font(f.get("typeface"))
+                is_title = ph_type in ("title", "ctrTitle")
                 tnode = r.find("a:t", NS)
+                text = tnode.text if tnode is not None and tnode.text else ""
+                if t == "fld" and (r.get("type") or "").startswith("slidenum"):
+                    text = "{{SLIDENUM}}"
                 runs.append({
-                    "text": tnode.text if tnode is not None and tnode.text else "",
+                    "text": text,
                     "size": (int(sz) / 100.0 if sz else 18.0) * scale,
                     "bold": first_attr(chain, "b") in ("1", "true"),
                     "italic": first_attr(chain, "i") in ("1", "true"),
                     "underline": (first_attr(chain, "u") or "none") != "none",
                     "color": color or style_font or "#" + theme.scheme("tx1"),
-                    "font": face or (theme.major if ph_type in ("title", "ctrTitle") else theme.minor),
-                    "font_ea": theme.major_ea if ph_type in ("title", "ctrTitle") else theme.minor_ea,
+                    "font": latin or (theme.major if is_title else theme.minor),
+                    "font_ea": ea or (theme.major_ea if is_title else theme.minor_ea),
                 })
             end = p.find("a:endParaRPr", NS)
             empty_size = None
@@ -735,6 +810,7 @@ class Extractor:
             out["paragraphs"].append({"align": algn, "line": ln_pct, "spaceBefore": spc_bef,
                                       "bullet": bullet, "level": lvl,
                                       "marL": int(indent) / EMU_PT if indent else 0,
+                                      "indent": int(hang) / EMU_PT if hang else 0,
                                       "runs": runs, "emptySize": empty_size})
         return out
 
@@ -758,6 +834,11 @@ class Extractor:
             notes = ""
             if slide.has_notes_slide:
                 notes = slide.notes_slide.notes_text_frame.text if slide.notes_slide.notes_text_frame else ""
+            for e in elements:
+                for para in (e.get("text") or {}).get("paragraphs", []):
+                    for r in para["runs"]:
+                        if r.get("text") == "{{SLIDENUM}}":
+                            r["text"] = str(i)
             slides.append({
                 "index": i,
                 "background": self.background(slide, theme),
