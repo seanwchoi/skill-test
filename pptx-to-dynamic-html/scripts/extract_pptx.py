@@ -449,7 +449,10 @@ class Extractor:
                 def child_xf(x, y, w, h, _p=xf, ox=ox, oy=oy, cx=cx, cy=cy, sx=sx, sy=sy):
                     return _p(ox + (x - cx) * sx, oy + (y - cy) * sy, w * sx, h * sy)
 
+                outer_grp = getattr(self, "_grp", None)
+                self._grp = outer_grp or "g%s" % shp.shape_id  # top-level group id
                 self.walk(shp.shapes, child_xf, theme, tdefs, layout, origin, out)
+                self._grp = outer_grp
                 self._gfill = outer
                 continue
             try:
@@ -457,6 +460,14 @@ class Extractor:
             except Exception as e:  # never let one odd shape kill the deck
                 item = self.raster_item(shp, xf, origin, "error: %s" % e)
             if item:
+                if getattr(self, "_grp", None):
+                    item["group"] = self._grp
+                if getattr(shp, "is_placeholder", False):
+                    try:
+                        t = shp._element.find(".//p:nvPr/p:ph", NS).get("type")
+                        item["ph"] = t or "body"
+                    except Exception:
+                        pass
                 out.append(item)
 
     def geom(self, shp):

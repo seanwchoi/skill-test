@@ -258,7 +258,8 @@ def shape_svg_body(e):
 
 # ------------------------------------------------------------------ builder
 class Builder:
-    def __init__(self, work, include_hidden=False):
+    def __init__(self, work, include_hidden=False, auto_animate=True):
+        self.auto_animate = auto_animate
         self.work = work
         self.data = json.load(open(os.path.join(work, "slides.json"), encoding="utf-8"))
         self.W, self.H = self.data["width"], self.data["height"]
@@ -604,6 +605,113 @@ class Builder:
                 res.setdefault(target["id"], {"target": target, "callouts": []})["callouts"].append(c)
         return res
 
+    # ------------------------------------------------------------ auto entrance
+    ARROW_WIPE = {"rightArrow": "left", "notchedRightArrow": "left", "stripedRightArrow": "left",
+                  "chevron": "left", "homePlate": "left", "pentagon": "left",
+                  "leftArrow": "right", "downArrow": "top", "upArrow": "bottom"}
+
+    def auto_plan(self, s):
+        """For a slide without PowerPoint animations, build a calm entrance in
+        reading order. Returns {element index: (step, effect)}.
+
+        Units that appear together: a PowerPoint group, and anything sitting on
+        top of a card/box (text on a shape, an icon in a circle). Big panels and
+        the title come first, then units top-to-bottom, left-to-right."""
+        els = s["elements"]
+        area = self.W * self.H
+        idx = [i for i, e in enumerate(els)
+               if e["origin"] == "slide" and not e.get("callout")
+               and not (e["w"] * e["h"] > 0.55 * area and e["kind"] in ("shape", "picture"))
+               and not (e["kind"] == "raster" and not e.get("src"))]
+        if not idx:
+            return {}
+        parent = {i: i for i in idx}
+
+        def find(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        first_of_group = {}
+        for i in idx:
+            g = els[i].get("group")
+            if g:
+                if g in first_of_group:
+                    union(first_of_group[g], i)
+                else:
+                    first_of_group[g] = i
+
+        def box(e):
+            return e["x"], e["y"], e["x"] + e["w"], e["y"] + e["h"]
+
+        # things sitting on a card join the card (cards up to 25% of the slide)
+        containers = [i for i in idx if els[i]["kind"] in ("shape", "picture") and els[i].get("prst") != "custom"
+                      and els[i]["w"] * els[i]["h"] < 0.25 * area
+                      and ((els[i].get("fill") or {}).get("type") not in (None, "none")
+                           or ((els[i].get("line") or {}).get("fill") or {}).get("type") not in (None, "none")
+                           or els[i]["kind"] == "picture")]
+        for i in idx:
+            e = els[i]
+            cx, cy = e["x"] + e["w"] / 2, e["y"] + e["h"] / 2
+            best = None
+            for c in containers:
+                if c == i:
+                    continue
+                x0, y0, x1, y1 = box(els[c])
+                ca = els[c]["w"] * els[c]["h"]
+                if x0 <= cx <= x1 and y0 <= cy <= y1 and ca > e["w"] * e["h"] * 1.5:
+                    if best is None or ca < els[best]["w"] * els[best]["h"]:
+                        best = c
+            if best is not None:
+                union(best, i)
+
+        units = {}
+        for i in idx:
+            units.setdefault(find(i), []).append(i)
+        info = []
+        for root, members in units.items():
+            xs0 = min(els[m]["x"] for m in members)
+            ys0 = min(els[m]["y"] for m in members)
+            xs1 = max(els[m]["x"] + els[m]["w"] for m in members)
+            ys1 = max(els[m]["y"] + els[m]["h"] for m in members)
+            big = (xs1 - xs0) * (ys1 - ys0) > 0.25 * area and len(members) == 1
+            title = any(els[m].get("ph") in ("title", "ctrTitle") for m in members)
+            info.append({"members": members, "x": xs0, "y": ys0, "big": big, "title": title})
+        head = [u for u in info if u["big"] or u["title"]]
+        rest = [u for u in info if not (u["big"] or u["title"])]
+        band = self.H * 0.08
+        rest.sort(key=lambda u: (int(u["y"] / band), u["x"]))
+        # keep a slide brisk: at most ~10 steps after the heading
+        steps = [head] if head else []
+        if rest:
+            n = min(len(rest), 10)
+            per = -(-len(rest) // n)
+            steps += [rest[k:k + per] for k in range(0, len(rest), per)]
+        plan = {}
+        for st, group in enumerate(steps):
+            for u in group:
+                single = len(u["members"]) == 1
+                for m in u["members"]:
+                    e = els[m]
+                    if u["big"]:
+                        fx = "fade"
+                    elif single and e["kind"] == "line":
+                        fx = "draw"
+                    elif single and e.get("arrow") and e.get("prst") in self.ARROW_WIPE:
+                        fx = "wipe:" + self.ARROW_WIPE[e["prst"]]
+                    elif single and e["kind"] == "picture" and e["w"] * e["h"] > 0.08 * area:
+                        fx = "zoom"
+                    else:
+                        fx = "fly-short"
+                    plan[m] = (st, fx)
+        return plan
+
     # ------------------------------------------------------------ slide
     def slide(self, s):
         els = s["elements"]
@@ -616,6 +724,8 @@ class Builder:
         target_ids = set(targets)
         parts = []
         timeline = []
+        auto = {} if (s["animations"] or not self.auto_animate) else self.auto_plan(s)
+        STEP_MS = 140
         for z, e in enumerate(els):
             if e["kind"] == "raster" and not e.get("src"):
                 continue
@@ -658,6 +768,17 @@ class Builder:
                 data += ' data-fx="%s" data-dir="%s"' % (eff, edir)
                 timeline.append({"id": elid, "kind": "in", "trigger": entr["trigger"], "order": entr["order"],
                                  "delay": entr["delay"], "dur": entr["dur"]})
+            if z in auto and not entr:
+                st, fx = auto[z]
+                edir = "bottom"
+                if fx == "draw":
+                    fx, edir = "wipe", wdir
+                elif fx.startswith("wipe:"):
+                    fx, edir = "wipe", fx.split(":")[1]
+                classes.append("pre")
+                data += ' data-fx="%s" data-dir="%s"' % (fx, edir)
+                timeline.append({"id": elid, "kind": "in", "trigger": "with", "order": st * 10000 + z,
+                                 "step": st, "delay": 0, "dur": 520 if fx != "fade" else 600})
             if emph and not e.get("callout"):
                 timeline.append({"id": elid, "kind": "pulse", "trigger": emph["trigger"], "order": emph["order"],
                                  "delay": emph["delay"], "dur": emph["dur"]})
@@ -676,6 +797,12 @@ class Builder:
             hots.append('<div class="hot" style="%s--accent:%s" data-co="%s" data-target="%s"><i class="hint"></i></div>' % (
                 self.box_style(dict(t, rot=0)), css_color(accent)[:7] if accent.startswith("#") else css_color(accent), co, tgt))
         timeline.sort(key=lambda a: a["order"])
+        if auto:  # each step starts STEP_MS after the previous one; members of a step start together
+            prev = None
+            for a in timeline:
+                st = a.pop("step", 0)
+                a["delay"] = 0 if prev is None or st == prev else STEP_MS
+                prev = st
         return ('<section class="slide" id="slide-%d" data-index="%d"><div class="stage" style="%s" '
                 'data-timeline=\'%s\'>%s%s</div></section>') % (
             s["index"], s["index"], self.css_background(s["background"]),
@@ -697,8 +824,10 @@ if __name__ == "__main__":
     ap.add_argument("out")
     ap.add_argument("--title", default="Presentation")
     ap.add_argument("--include-hidden", action="store_true")
+    ap.add_argument("--no-auto-animate", action="store_true",
+                    help="leave slides without PowerPoint animations static")
     a = ap.parse_args()
-    html_out = Builder(a.work, a.include_hidden).build(a.title)
+    html_out = Builder(a.work, a.include_hidden, not a.no_auto_animate).build(a.title)
     with open(a.out, "w", encoding="utf-8") as fh:
         fh.write(html_out)
     print("wrote %s (%.1f KB)" % (a.out, len(html_out.encode()) / 1024))
