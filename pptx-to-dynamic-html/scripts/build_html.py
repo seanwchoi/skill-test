@@ -119,7 +119,7 @@ def callout_ellipse_path(w, h, tip):
     a1, a2 = ang - 0.2, ang + 0.2
     p1 = (rx + rx * math.cos(a1), ry + ry * math.sin(a1))
     p2 = (rx + rx * math.cos(a2), ry + ry * math.sin(a2))
-    return "M{} {} A{} {} 0 1 0 {} {} L{} {} Z".format(
+    return "M{} {} A{} {} 0 1 1 {} {} L{} {} Z".format(
         f(p2[0]), f(p2[1]), f(rx), f(ry), f(p1[0]), f(p1[1]), f(tip[0]), f(tip[1]))
 
 
