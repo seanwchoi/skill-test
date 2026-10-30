@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<style>
+:root {
+  --fallback: "Pretendard Variable", Pretendard, "Noto Sans KR", "Noto Sans CJK KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  --page: #16181d;
+  --ink: #e8e9ec;
+}
+* { box-sizing: border-box; }
+html { scroll-snap-type: y proximity; scroll-behavior: smooth; }
+html, body { margin: 0; background: var(--page); color: var(--ink); font-family: var(--fallback); }
+.deck { display: block; }
+
+/* one slide per screen */
+.slide { min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  padding: 28px 16px; scroll-snap-align: center; }
+.stage { position: relative; width: min(94vw, calc((100vh - 56px) * {{RATIO}})); aspect-ratio: {{RATIO}};
+  container-type: inline-size; overflow: hidden; border-radius: 6px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.45), 0 2px 8px rgba(0,0,0,.3);
+  --mx: 0; --my: 0; -webkit-font-smoothing: antialiased; }
+
+/* every slide element; parallax is a translate driven by --mx/--my and the layer depth */
+.el { position: absolute; --depth: .45;
+  transform: translate(calc(var(--mx) * var(--depth) * -1cqw), calc(var(--my) * var(--depth) * -1cqw))
+             rotate(var(--rot, 0deg)) scaleX(var(--fx, 1)); }
+.el.bg { --depth: .12; }
+.el.fg { --depth: .45; }
+.el.co { --depth: .8; z-index: 60; }
+.anim { position: absolute; inset: 0; --dur: 500ms; --delay: 0ms;
+  transition: opacity var(--dur) ease var(--delay),
+              transform var(--dur) cubic-bezier(.2,.75,.25,1) var(--delay),
+              clip-path var(--dur) cubic-bezier(.4,0,.2,1) var(--delay),
+              filter .25s ease; }
+.el { --dur: 500ms; --delay: 0ms; }
+.el > .anim { --dur: inherit; --delay: inherit; }
+
+.geo { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.geo.shadow { filter: drop-shadow(0 .25cqw .55cqw rgba(0,0,0,.2)); }
+.tx { position: absolute; inset: 0; display: flex; flex-direction: column; overflow: visible;
+  word-break: keep-all; overflow-wrap: break-word; }
+.tx p { margin: 0; }
+.bu { display: inline-block; min-width: 1em; margin-right: .25em; }
+.pic { position: absolute; inset: 0; overflow: hidden; }
+.pic img { position: absolute; max-width: none; display: block; }
+img.raster { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.wire { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+
+/* flowing arrows: a short bright dash travels along the connector */
+.flow { animation: flow var(--fdur, 1.4s) linear infinite; opacity: .95; }
+.flow.rev { animation-direction: reverse; }
+@keyframes flow { from { stroke-dashoffset: calc(var(--period) * 1px); } to { stroke-dashoffset: 0; } }
+/* block arrows: a soft sheen sweeps in the arrow's direction */
+.sheen-x { animation: sheenx 3.2s ease-in-out infinite; }
+.sheen-y { animation: sheeny 3.2s ease-in-out infinite; }
+.sheen.rev { animation-direction: reverse; }
+@keyframes sheenx { 0% { transform: translateX(0); } 65%, 100% { transform: translateX(calc(var(--span) * 1px)); } }
+@keyframes sheeny { 0% { transform: translateY(0); } 65%, 100% { transform: translateY(calc(var(--span) * 1px)); } }
+
+/* entrance states (PPT entrance effects) — removed in timeline order by JS */
+.el.pre > .anim { opacity: 0; }
+.el.pre[data-fx="fly"][data-dir="left"] > .anim { transform: translateX(-4cqw); }
+.el.pre[data-fx="fly"][data-dir="right"] > .anim { transform: translateX(4cqw); }
+.el.pre[data-fx="fly"][data-dir="top"] > .anim { transform: translateY(-4cqw); }
+.el.pre[data-fx="fly"] > .anim { transform: translateY(4cqw); }
+.el.pre[data-fx="fly-short"] > .anim { transform: translateY(1.6cqw); }
+.el.pre[data-fx="zoom"] > .anim { transform: scale(.86); }
+.el[data-fx="wipe"] > .anim, .el[data-fx="split"] > .anim { clip-path: inset(-25% -25% -25% -25%); }
+.el.pre[data-fx="wipe"] > .anim, .el.pre[data-fx="split"] > .anim { opacity: 1; }
+.el.pre[data-fx="wipe"] > .anim { clip-path: inset(-25% 100% -25% -25%); }
+.el.pre[data-fx="wipe"][data-dir="right"] > .anim { clip-path: inset(-25% -25% -25% 100%); }
+.el.pre[data-fx="wipe"][data-dir="top"] > .anim { clip-path: inset(-25% -25% 100% -25%); }
+.el.pre[data-fx="wipe"][data-dir="bottom"] > .anim { clip-path: inset(100% -25% -25% -25%); }
+.el.pre[data-fx="split"] > .anim { clip-path: inset(-25% 50% -25% 50%); }
+.el.pre[data-fx="split"][data-dir="vertical"] > .anim { clip-path: inset(50% -25% 50% -25%); }
+.anim.pulse { animation: pulse .7s ease-in-out; }
+@keyframes pulse { 50% { transform: scale(1.06); } }
+
+/* callouts: hidden until their target area is hovered */
+.el.callout { opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity .22s ease, visibility .22s; }
+.el.callout > .anim { transform: translateY(.6cqw) scale(.97); transition: transform .3s cubic-bezier(.2,.8,.2,1); }
+.el.callout.show { opacity: 1; visibility: visible; }
+.el.callout.show > .anim { transform: none; }
+.el.target.lit > .anim { transform: translateY(-.25cqw); filter: brightness(1.04) drop-shadow(0 .5cqw .9cqw rgba(0,0,0,.18)); }
+.hot { position: absolute; z-index: 50; cursor: help; }
+.hint { position: absolute; right: -.4cqw; top: -.4cqw; width: .8cqw; height: .8cqw; border-radius: 50%;
+  background: var(--accent); opacity: .9; transition: opacity .3s;
+  animation: hint 2.6s ease-out infinite; }
+.hot[data-target=""] .hint { right: auto; top: 50%; left: 50%; margin: -.4cqw 0 0 -.4cqw; }
+@keyframes hint { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent); }
+                  70%, 100% { box-shadow: 0 0 0 1.1cqw transparent; } }
+.stage:not(.played) .hint, .hot:hover .hint, .hot.on .hint { opacity: 0; }
+
+/* side navigation */
+.nav { position: fixed; right: 14px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column;
+  gap: 9px; z-index: 100; }
+.nav a { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,.28); display: block;
+  transition: background .2s, transform .2s; }
+.nav a.on { background: rgba(255,255,255,.9); transform: scale(1.25); }
+@media (max-width: 640px) { .nav { display: none; } }
+
+/* calm version: reduced motion, ?static */
+@media (prefers-reduced-motion: reduce) {
+  .anim, .el.callout, .el.callout > .anim { transition: none !important; }
+  .flow, .sheen, .hint { animation: none !important; }
+  .flow { display: none; }
+}
+html.static .anim, html.static .el.callout { transition: none !important; }
+html.static .flow, html.static .sheen, html.static .hint { animation: none !important; }
+html.static .flow, html.static .hint { display: none; }
+</style>
+</head>
+<body>
+<main class="deck">{{SLIDES}}</main>
+<nav class="nav" aria-label="slides"></nav>
+<script>
+(() => {
+  const qs = new URLSearchParams(location.search);
+  const STATIC = qs.has('static');
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const finePointer = matchMedia('(hover: hover) and (pointer: fine)').matches;
+  const stages = [...document.querySelectorAll('.stage')];
+  const slides = [...document.querySelectorAll('.slide')];
+
+  // ---- entrance timeline (PPT order: click / with / after, compressed to feel brisk)
+  function play(stage) {
+    if (stage.dataset.done) return;
+    stage.dataset.done = '1';
+    let tl = [];
+    try { tl = JSON.parse(stage.dataset.timeline || '[]'); } catch (e) {}
+    if (STATIC || reduce) {
+      stage.querySelectorAll('.el.pre').forEach(el => el.classList.remove('pre'));
+      stage.classList.add('played');
+      return;
+    }
+    const plan = [];
+    let end = 0, lastStart = 0, lastEnd = 0;
+    tl.forEach((a, i) => {
+      const dur = a.kind === 'in' && a.dur <= 1 ? 1 : Math.max(220, Math.min(800, a.dur * 0.85));
+      const delay = Math.min(a.delay, 1500) * 0.85;
+      let start;
+      if (i === 0 || a.trigger === 'click') start = (i === 0 ? 180 : end + 160) + delay;
+      else if (a.trigger === 'with') start = lastStart + delay;
+      else start = lastEnd + delay;
+      plan.push({ a, start, dur });
+      lastStart = start; lastEnd = start + dur; end = Math.max(end, lastEnd);
+    });
+    const k = end > 5200 ? 5200 / end : 1;     // long builds are squeezed so a slide never drags
+    plan.forEach(({ a, start, dur }) => {
+      const el = document.getElementById(a.id);
+      if (!el) return;
+      if (a.kind === 'in') {
+        el.style.setProperty('--dur', (dur * k) + 'ms');
+        el.style.setProperty('--delay', (start * k) + 'ms');
+        el.classList.remove('pre');
+      } else {
+        setTimeout(() => { const an = el.firstElementChild; an.classList.remove('pulse'); void an.offsetWidth; an.classList.add('pulse'); }, start * k);
+      }
+    });
+    setTimeout(() => {
+      stage.classList.add('played');
+      stage.querySelectorAll('.el').forEach(el => { el.style.setProperty('--delay', '0ms'); el.style.setProperty('--dur', '300ms'); });
+    }, end * k + 100);
+  }
+
+  // ---- show slides as they scroll in; keep the side nav in sync
+  const nav = document.querySelector('.nav');
+  slides.forEach((s, i) => {
+    const a = document.createElement('a');
+    a.href = '#' + s.id; a.title = String(i + 1);
+    nav.appendChild(a);
+  });
+  const dots = [...nav.children];
+  const io = new IntersectionObserver(entries => {
+    entries.forEach(en => {
+      if (!en.isIntersecting) return;
+      play(en.target.querySelector('.stage'));
+      const i = slides.indexOf(en.target);
+      dots.forEach((d, j) => d.classList.toggle('on', i === j));
+    });
+  }, { threshold: 0.45 });
+  slides.forEach(s => io.observe(s));
+
+  // ---- callouts: hover (or tap) the target area to reveal its bubbles
+  function setHot(hot, on) {
+    hot.classList.toggle('on', on);
+    (hot.dataset.co || '').split(' ').forEach(id => { const c = document.getElementById(id); if (c) c.classList.toggle('show', on); });
+    const t = hot.dataset.target && document.getElementById(hot.dataset.target);
+    if (t) t.classList.toggle('lit', on);
+  }
+  document.querySelectorAll('.hot').forEach(hot => {
+    hot.addEventListener('pointerenter', e => { if (e.pointerType === 'mouse') setHot(hot, true); });
+    hot.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') setHot(hot, false); });
+    hot.addEventListener('click', e => { if (e.pointerType !== 'mouse') setHot(hot, !hot.classList.contains('on')); });
+  });
+  if (qs.has('callouts')) document.querySelectorAll('.el.callout').forEach(c => c.classList.add('show'));
+
+  // ---- light parallax: background and content layers drift a little with the mouse
+  if (!STATIC && !reduce && finePointer) {
+    stages.forEach(stage => {
+      let tx = 0, ty = 0, x = 0, y = 0, raf = 0;
+      const tick = () => {
+        x += (tx - x) * 0.08; y += (ty - y) * 0.08;
+        stage.style.setProperty('--mx', x.toFixed(4));
+        stage.style.setProperty('--my', y.toFixed(4));
+        raf = (Math.abs(tx - x) + Math.abs(ty - y) > 0.001) ? requestAnimationFrame(tick) : 0;
+      };
+      const kick = () => { if (!raf) raf = requestAnimationFrame(tick); };
+      stage.addEventListener('pointermove', e => {
+        const r = stage.getBoundingClientRect();
+        tx = ((e.clientX - r.left) / r.width - 0.5) * 2;
+        ty = ((e.clientY - r.top) / r.height - 0.5) * 2;
+        kick();
+      });
+      stage.addEventListener('pointerleave', () => { tx = 0; ty = 0; kick(); });
+    });
+  }
+
+  // ---- keyboard paging for presenting
+  const current = () => {
+    const mid = innerHeight / 2;
+    let best = 0, bd = Infinity;
+    slides.forEach((s, i) => { const r = s.getBoundingClientRect(); const d = Math.abs(r.top + r.height / 2 - mid); if (d < bd) { bd = d; best = i; } });
+    return best;
+  };
+  const go = i => slides[Math.max(0, Math.min(slides.length - 1, i))].scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'center' });
+  addEventListener('keydown', e => {
+    if (['ArrowDown', 'PageDown', ' ', 'ArrowRight'].includes(e.key)) { e.preventDefault(); go(current() + 1); }
+    else if (['ArrowUp', 'PageUp', 'ArrowLeft'].includes(e.key)) { e.preventDefault(); go(current() - 1); }
+    else if (e.key === 'Home') { e.preventDefault(); go(0); }
+    else if (e.key === 'End') { e.preventDefault(); go(slides.length - 1); }
+  });
+
+  if (STATIC) { document.documentElement.classList.add('static'); stages.forEach(play); }
+})();
+</script>
+</body>
+</html>
