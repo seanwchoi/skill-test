@@ -663,26 +663,28 @@ class Builder:
         def box(e):
             return e["x"], e["y"], e["x"] + e["w"], e["y"] + e["h"]
 
-        # things sitting on a card join the card (cards up to 25% of the slide)
-        containers = [i for i in idx if els[i]["kind"] in ("shape", "picture") and els[i].get("prst") != "custom"
-                      and els[i]["w"] * els[i]["h"] < 0.25 * area
-                      and ((els[i].get("fill") or {}).get("type") not in (None, "none")
-                           or ((els[i].get("line") or {}).get("fill") or {}).get("type") not in (None, "none")
-                           or els[i]["kind"] == "picture")]
+        # everything inside a box belongs to that box: an element joins the
+        # smallest box (shape, picture, table, text frame - filled or not) that
+        # holds at least half of it. Boxes over 30% of the slide are panels and
+        # do not gather their contents (they would swallow the whole slide).
+        def overlap(e, c):
+            x0, y0 = max(e["x"], c["x"]), max(e["y"], c["y"])
+            x1, y1 = min(e["x"] + e["w"], c["x"] + c["w"]), min(e["y"] + e["h"], c["y"] + c["h"])
+            return max(0.0, x1 - x0) * max(0.0, y1 - y0) / max(e["w"] * e["h"], 0.01)
+
+        # When boxes overlap (lenses, stacked cards) the element belongs to the
+        # one drawn directly beneath it - the box it visibly sits on.
+        containers = [i for i in idx if els[i]["kind"] != "line" and els[i]["w"] * els[i]["h"] <= 0.3 * area]
         for i in idx:
             e = els[i]
-            cx, cy = e["x"] + e["w"] / 2, e["y"] + e["h"] / 2
-            best = None
-            for c in containers:
-                if c == i:
-                    continue
-                x0, y0, x1, y1 = box(els[c])
-                ca = els[c]["w"] * els[c]["h"]
-                if x0 <= cx <= x1 and y0 <= cy <= y1 and ca > e["w"] * e["h"] * 1.5:
-                    if best is None or ca < els[best]["w"] * els[best]["h"]:
-                        best = c
-            if best is not None:
-                union(best, i)
+            ea = max(e["w"] * e["h"], 0.01)
+            holders = [c for c in containers if c != i and els[c]["w"] * els[c]["h"] > ea * 1.2
+                       and overlap(e, els[c]) >= 0.5]
+            if not holders:
+                continue
+            below = [c for c in holders if c < i]
+            best = max(below) if below else min(holders, key=lambda c: els[c]["w"] * els[c]["h"])
+            union(best, i)
 
         units = {}
         for i in idx:
@@ -748,7 +750,7 @@ class Builder:
         out = {}
         for k, u in enumerate(self.units(s)):
             uw, uh = u["x1"] - u["x"], u["y1"] - u["y"]
-            if u["big"] or uw * uh > 0.3 * area:
+            if u["big"] or u["title"] or uw * uh > 0.3 * area:
                 continue
             # grow by roughly 12-16pt whatever the size: small things 7%, big blocks 3%
             scale = 1 + max(0.03, min(0.07, 14.0 / max(uw, uh, 1)))
@@ -757,11 +759,27 @@ class Builder:
                 els[m]["kind"] == "shape" and ((els[m].get("fill") or {}).get("type") not in (None, "none")
                                               or ((els[m].get("line") or {}).get("fill") or {}).get("type") not in (None, "none")))]
             base = max(filled, key=lambda m: els[m]["w"] * els[m]["h"]) if filled else None
+            # bring the unit to the front only when nothing outside it is drawn on
+            # top of it; otherwise parts the author hid under a neighbour (e.g.
+            # overlapping lenses) would cover that neighbour's text
+            mem = set(u["members"])
+            top = max(u["members"])
+            lift = True
+            for j, o in enumerate(els):
+                if j <= min(mem) or j in mem or o["origin"] != "slide" or o.get("callout"):
+                    continue
+                if o["w"] * o["h"] > 0.55 * area:
+                    continue
+                if any(j > m and not (o["x"] >= els[m]["x"] + els[m]["w"] or o["x"] + o["w"] <= els[m]["x"]
+                                      or o["y"] >= els[m]["y"] + els[m]["h"] or o["y"] + o["h"] <= els[m]["y"])
+                       for m in mem):
+                    lift = False
+                    break
             for m in u["members"]:
                 # no card under a text-only unit: every member carries a light shadow
                 # (skipped for many-piece units such as a vector map: hundreds of
                 # filters would make hovering stutter)
-                out[m] = (k, centre, scale, m == base or (base is None and len(u["members"]) <= 8))
+                out[m] = (k, centre, scale, m == base or (base is None and len(u["members"]) <= 8), lift)
         return out
 
     # ------------------------------------------------------------ slide
@@ -838,13 +856,15 @@ class Builder:
             if e.get("flipH") and e["kind"] != "shape" and e["kind"] != "line":
                 style += "--fx:-1;"
             if z in hover:
-                uid, origin_xy, scale, base = hover[z]
+                uid, origin_xy, scale, base, lift = hover[z]
                 ex, ey, ew, eh = (bx, by, bw, bh) if e["kind"] == "line" else (e["x"], e["y"], e["w"], e["h"])
                 ox = (origin_xy[0] - ex) / max(ew, 0.01) * 100
                 oy = (origin_xy[1] - ey) / max(eh, 0.01) * 100
                 classes.append("hv")
                 if base:
                     classes.append("hv-base")
+                if lift:
+                    classes.append("hv-lift")
                 data += ' data-u="s%d-u%d"' % (s["index"], uid)
                 style += "--hs:%s;--hox:%s%%;--hoy:%s%%;" % (f(scale), f(ox), f(oy))
             parts.append('<div id="%s" class="%s" style="%s"%s><div class="anim">%s</div></div>' % (

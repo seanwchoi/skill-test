@@ -101,7 +101,7 @@ img.raster { position: absolute; inset: 0; width: 100%; height: 100%; display: b
 .el.hv > .anim { transform-origin: var(--hox, 50%) var(--hoy, 50%); }
 /* only highlightable units take the mouse; panels and decoration let it through */
 .stage.played .el:not(.hv):not(.callout) { pointer-events: none; }
-.stage.played .el.hv.hl { z-index: 40; }
+.stage.played .el.hv-lift.hl { z-index: 40; }  /* only units with nothing drawn on top of them */
 .stage.played .el.hv.hl > .anim { transform: scale(var(--hs, 1.03)); }
 .stage.played .el.hv-base.hl > .anim { filter: brightness(1.04) drop-shadow(0 .7cqw 1.4cqw rgba(0,0,0,.22)); }
 
