@@ -258,8 +258,9 @@ def shape_svg_body(e):
 
 # ------------------------------------------------------------------ builder
 class Builder:
-    def __init__(self, work, include_hidden=False, auto_animate=True):
+    def __init__(self, work, include_hidden=False, auto_animate=True, hover=True):
         self.auto_animate = auto_animate
+        self.hover = hover
         self.work = work
         self.data = json.load(open(os.path.join(work, "slides.json"), encoding="utf-8"))
         self.W, self.H = self.data["width"], self.data["height"]
@@ -610,13 +611,13 @@ class Builder:
                   "chevron": "left", "homePlate": "left", "pentagon": "left",
                   "leftArrow": "right", "downArrow": "top", "upArrow": "bottom"}
 
-    def auto_plan(self, s):
-        """For a slide without PowerPoint animations, build a calm entrance in
-        reading order. Returns {element index: (step, effect)}.
-
-        Units that appear together: a PowerPoint group, and anything sitting on
-        top of a card/box (text on a shape, an icon in a circle). Big panels and
-        the title come first, then units top-to-bottom, left-to-right."""
+    def units(self, s):
+        """Visual units of a slide: a PowerPoint group, or a card/box together
+        with what sits on it (text on a shape, an icon in a circle). Units move
+        together, both for the automatic entrance and for the hover highlight.
+        Returns a list of {members, x, y, x1, y1, big, title}."""
+        if "_units" in s:
+            return s["_units"]
         els = s["elements"]
         area = self.W * self.H
         idx = [i for i, e in enumerate(els)
@@ -624,7 +625,8 @@ class Builder:
                and not (e["w"] * e["h"] > 0.55 * area and e["kind"] in ("shape", "picture"))
                and not (e["kind"] == "raster" and not e.get("src"))]
         if not idx:
-            return {}
+            s["_units"] = []
+            return []
         parent = {i: i for i in idx}
 
         def find(i):
@@ -638,9 +640,20 @@ class Builder:
             if ra != rb:
                 parent[rb] = ra
 
+        # a PowerPoint group moves as one, unless it is a layout-sized group (a
+        # whole grid or panel): then its cards are treated on their own
+        gbox = {}
+        for i in idx:
+            g = els[i].get("group")
+            if g:
+                e = els[i]
+                b = gbox.get(g, (e["x"], e["y"], e["x"] + e["w"], e["y"] + e["h"]))
+                gbox[g] = (min(b[0], e["x"]), min(b[1], e["y"]), max(b[2], e["x"] + e["w"]), max(b[3], e["y"] + e["h"]))
         first_of_group = {}
         for i in idx:
             g = els[i].get("group")
+            if g and (gbox[g][2] - gbox[g][0]) * (gbox[g][3] - gbox[g][1]) > 0.3 * area:
+                g = None
             if g:
                 if g in first_of_group:
                     union(first_of_group[g], i)
@@ -682,7 +695,20 @@ class Builder:
             ys1 = max(els[m]["y"] + els[m]["h"] for m in members)
             big = (xs1 - xs0) * (ys1 - ys0) > 0.25 * area and len(members) == 1
             title = any(els[m].get("ph") in ("title", "ctrTitle") for m in members)
-            info.append({"members": members, "x": xs0, "y": ys0, "big": big, "title": title})
+            info.append({"members": members, "x": xs0, "y": ys0, "x1": xs1, "y1": ys1, "big": big, "title": title})
+        s["_units"] = info
+        return info
+
+    def auto_plan(self, s):
+        """For a slide without PowerPoint animations, build a calm entrance in
+        reading order. Returns {element index: (step, effect)}.
+        Big panels and the title come first, then units top-to-bottom,
+        left-to-right."""
+        els = s["elements"]
+        area = self.W * self.H
+        info = self.units(s)
+        if not info:
+            return {}
         head = [u for u in info if u["big"] or u["title"]]
         rest = [u for u in info if not (u["big"] or u["title"])]
         band = self.H * 0.08
@@ -712,6 +738,32 @@ class Builder:
                     plan[m] = (st, fx)
         return plan
 
+    def hover_plan(self, s):
+        """Hover highlight: every unit except the title and big panels grows a
+        little around its own centre. Returns {element index: (unit id,
+        (cx, cy) scale origin in pt, scale, is_base)}. The base (the card or
+        the largest member) carries the shadow so text never gets a glow."""
+        els = s["elements"]
+        area = self.W * self.H
+        out = {}
+        for k, u in enumerate(self.units(s)):
+            uw, uh = u["x1"] - u["x"], u["y1"] - u["y"]
+            if u["big"] or uw * uh > 0.3 * area:
+                continue
+            # grow by roughly 12-16pt whatever the size: small things 7%, big blocks 3%
+            scale = 1 + max(0.03, min(0.07, 14.0 / max(uw, uh, 1)))
+            centre = (u["x"] + uw / 2, u["y"] + uh / 2)
+            filled = [m for m in u["members"] if els[m]["kind"] in ("picture", "raster") or (
+                els[m]["kind"] == "shape" and ((els[m].get("fill") or {}).get("type") not in (None, "none")
+                                              or ((els[m].get("line") or {}).get("fill") or {}).get("type") not in (None, "none")))]
+            base = max(filled, key=lambda m: els[m]["w"] * els[m]["h"]) if filled else None
+            for m in u["members"]:
+                # no card under a text-only unit: every member carries a light shadow
+                # (skipped for many-piece units such as a vector map: hundreds of
+                # filters would make hovering stutter)
+                out[m] = (k, centre, scale, m == base or (base is None and len(u["members"]) <= 8))
+        return out
+
     # ------------------------------------------------------------ slide
     def slide(self, s):
         els = s["elements"]
@@ -725,6 +777,7 @@ class Builder:
         parts = []
         timeline = []
         auto = {} if (s["animations"] or not self.auto_animate) else self.auto_plan(s)
+        hover = self.hover_plan(s) if self.hover else {}
         STEP_MS = 140
         for z, e in enumerate(els):
             if e["kind"] == "raster" and not e.get("src"):
@@ -784,6 +837,16 @@ class Builder:
                                  "delay": emph["delay"], "dur": emph["dur"]})
             if e.get("flipH") and e["kind"] != "shape" and e["kind"] != "line":
                 style += "--fx:-1;"
+            if z in hover:
+                uid, origin_xy, scale, base = hover[z]
+                ex, ey, ew, eh = (bx, by, bw, bh) if e["kind"] == "line" else (e["x"], e["y"], e["w"], e["h"])
+                ox = (origin_xy[0] - ex) / max(ew, 0.01) * 100
+                oy = (origin_xy[1] - ey) / max(eh, 0.01) * 100
+                classes.append("hv")
+                if base:
+                    classes.append("hv-base")
+                data += ' data-u="s%d-u%d"' % (s["index"], uid)
+                style += "--hs:%s;--hox:%s%%;--hoy:%s%%;" % (f(scale), f(ox), f(oy))
             parts.append('<div id="%s" class="%s" style="%s"%s><div class="anim">%s</div></div>' % (
                 elid, " ".join(classes), style, data, inner))
         # hover hotspots on top (so overlapping text boxes never block the hover)
@@ -826,8 +889,10 @@ if __name__ == "__main__":
     ap.add_argument("--include-hidden", action="store_true")
     ap.add_argument("--no-auto-animate", action="store_true",
                     help="leave slides without PowerPoint animations static")
+    ap.add_argument("--no-hover", action="store_true",
+                    help="no grow-and-highlight on mouseover")
     a = ap.parse_args()
-    html_out = Builder(a.work, a.include_hidden, not a.no_auto_animate).build(a.title)
+    html_out = Builder(a.work, a.include_hidden, not a.no_auto_animate, not a.no_hover).build(a.title)
     with open(a.out, "w", encoding="utf-8") as fh:
         fh.write(html_out)
     print("wrote %s (%.1f KB)" % (a.out, len(html_out.encode()) / 1024))

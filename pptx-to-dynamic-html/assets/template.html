@@ -96,6 +96,15 @@ img.raster { position: absolute; inset: 0; width: 100%; height: 100%; display: b
                   70%, 100% { box-shadow: 0 0 0 1.1cqw transparent; } }
 .stage:not(.played) .hint, .hot:hover .hint, .hot.on .hint { opacity: 0; }
 
+/* hover highlight: a unit (card + its text/icons, or a PPT group) grows a little
+   around its own centre; the card itself gets a soft lifted shadow */
+.el.hv > .anim { transform-origin: var(--hox, 50%) var(--hoy, 50%); }
+/* only highlightable units take the mouse; panels and decoration let it through */
+.stage.played .el:not(.hv):not(.callout) { pointer-events: none; }
+.stage.played .el.hv.hl { z-index: 40; }
+.stage.played .el.hv.hl > .anim { transform: scale(var(--hs, 1.03)); }
+.stage.played .el.hv-base.hl > .anim { filter: brightness(1.04) drop-shadow(0 .7cqw 1.4cqw rgba(0,0,0,.22)); }
+
 /* side navigation */
 .nav { position: fixed; right: 14px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column;
   gap: 9px; z-index: 100; }
@@ -109,6 +118,7 @@ img.raster { position: absolute; inset: 0; width: 100%; height: 100%; display: b
   .anim, .el.callout, .el.callout > .anim { transition: none !important; }
   .flow, .sheen, .hint { animation: none !important; }
   .flow { display: none; }
+  .stage.played .el.hv.hl > .anim { transform: none; }
 }
 html.static .anim, html.static .el.callout { transition: none !important; }
 html.static .flow, html.static .sheen, html.static .hint { animation: none !important; }
@@ -199,6 +209,30 @@ html.static .flow, html.static .hint { display: none; }
     hot.addEventListener('click', e => { if (e.pointerType !== 'mouse') setHot(hot, !hot.classList.contains('on')); });
   });
   if (qs.has('callouts')) document.querySelectorAll('.el.callout').forEach(c => c.classList.add('show'));
+
+  // ---- hover highlight: every member of the hovered unit grows together
+  if (!STATIC && finePointer) {
+    const byU = {};
+    document.querySelectorAll('.el.hv').forEach(el => (byU[el.dataset.u] = byU[el.dataset.u] || []).push(el));
+    let cur = null;
+    const light = (u, on) => (byU[u] || []).forEach(el => el.classList.toggle('hl', on));
+    const enter = u => { if (cur === u) return; if (cur) light(cur, false); cur = u; if (u) light(u, true); };
+    const leave = (u, e) => {
+      const to = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest('.el.hv, .hot') : null;
+      const toU = to ? (to.classList.contains('hot') ? unitOfHot(to) : to.dataset.u) : null;
+      if (toU === u) return;
+      if (cur === u) { light(u, false); cur = null; }
+    };
+    const unitOfHot = hot => { const t = hot.dataset.target && document.getElementById(hot.dataset.target); return t ? t.dataset.u : null; };
+    Object.values(byU).flat().forEach(el => {
+      el.addEventListener('pointerenter', () => enter(el.dataset.u));
+      el.addEventListener('pointerleave', e => leave(el.dataset.u, e));
+    });
+    document.querySelectorAll('.hot').forEach(hot => {
+      hot.addEventListener('pointerenter', () => { const u = unitOfHot(hot); if (u) enter(u); });
+      hot.addEventListener('pointerleave', e => { const u = unitOfHot(hot); if (u) leave(u, e); });
+    });
+  }
 
   // ---- light parallax: background and content layers drift a little with the mouse
   if (!STATIC && !reduce && finePointer) {
